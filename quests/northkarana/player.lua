@@ -38,7 +38,12 @@ local function get_s(key)
 end
 
 local function set_s(key, val, ttl)
-  eq.set_data(key, val or "", ttl or EVENT_TTL_SECONDS)
+  local t = ttl or EVENT_TTL_SECONDS
+  if t and t > 0 then
+    eq.set_data(key, val or "", tostring(math.floor(t)))
+  else
+    eq.set_data(key, val or "")
+  end
 end
 
 local function get_n(key)
@@ -60,13 +65,20 @@ end
 ---------------------------
 local function zmsg(msg)
   if ANNOUNCE_SCOPE == "world" then
-    eq.world_message(MT_Yellow, msg)
-  else
-    if eq.zone_message then
-      eq.zone_message(MT_Yellow, msg)
-    else
+    if eq.world_message then
       eq.world_message(MT_Yellow, msg)
+    else
+      eq.debug("world_message not available; falling back to client message")
     end
+    return
+  end
+
+  if eq.zone_emote then
+    eq.zone_emote(MT_Yellow, msg)
+  elseif eq.zone_message then
+    eq.zone_message(MT_Yellow, msg)
+  elseif eq.world_message then
+    eq.world_message(MT_Yellow, msg)
   end
 end
 
@@ -380,6 +392,14 @@ local function handle_command(e)
     if #rows == 0 then tell(e.self, "No PvP stats recorded for this event yet.") return true end
     local md = render_markdown(rows, eid)
     chunk_and_send(e.self, md)
+    if eq.write_zone_file then
+      local zone = eq.get_zone_short_name() or "zone"
+      local filename = string.format("%s_pvp_event_%s.md", zone, eid)
+      eq.write_zone_file(filename, md)
+      tell(e.self, "Saved export to " .. filename)
+    else
+      eq.debug("write_zone_file not available; skipping file export")
+    end
     return true
   end
 
@@ -427,16 +447,21 @@ end
 
 -- Fires on the KILLER; victim is e.other
 function event_pvp_kill(e)
+  -- Some server builds do not raise this callback; event_death handles fallback.
   if not event_active() then return end
   local killer = e.self
   local victim = e.other
-  if killer and killer.valid and victim and victim.valid then
-    record_kill(killer, victim)
+  if killer and killer.valid and killer:IsClient() and victim and victim.valid and victim:IsClient() then
+    record_kill(killer:CastToClient(), victim:CastToClient())
   end
 end
 
 function event_death(e)
-  -- no-op: deaths are counted at time of being the PvP victim
+  if not event_active() then return end
+  local killer = e.other
+  if killer and killer.valid and killer:IsClient() then
+    record_kill(killer:CastToClient(), e.self)
+  end
 end
 
 function event_connect(e)
